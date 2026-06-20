@@ -1,0 +1,96 @@
+1. 渗透测试思路（从Web测试开始）
+回答：
+“我的Web渗透测试思路遵循情报收集 → 漏洞扫描 → 手动验证 → 利用链构建 → 后渗透的流程。
+
+情报收集：子域名枚举（OneForAll/Subfinder）、目录扫描（Dirsearch/Fscan）、指纹识别（WhatWeb/Yakit）、端口服务枚举（Nmap）。
+自动化扫描：AWVS、Burp Scanner、Xray等发现低挂漏洞。
+手动测试：重点测试SQL注入（报错/盲注/时间/堆叠）、XSS（反射/存储/DOM）、文件上传（绕过姿势）、逻辑漏洞（越权、未授权、业务篡改）、命令执行等。Burp Suite是核心工具（Proxy + Repeater + Intruder）。
+利用与验证：构造Payload验证危害，注意业务影响。
+后渗透：获取Webshell后内网横向。
+
+整个过程强调手动为主，自动化辅助，在绿盟和安恒实习中我主要采用这种方式完成外网Web测试。”
+2. 内网渗透（从有域和无域开始讲）
+回答：
+无域环境（工作组）：
+
+信息收集：net view / net group、ipconfig / all、whoami /all、netstat -ano。
+提权：内核漏洞、弱口令、服务配置错误、令牌窃取（Incognito）。
+横向：SMB爆破（CrackMapExec）、PSEXEC、WMI、WinRM、RDP弱口令。
+
+有域环境（域林）：
+
+域信息收集：net group "domain admins" /domain、nltest /domain_trusts、BloodHound绘图。
+提权：Kerberoasting、AS-REP Roasting、Golden/Silver Ticket、DCSync。
+横向：Pass-The-Hash/Ticket、Constrained Delegation、Resource-Based Constrained Delegation、Cobalt Strike Beacon + 横向扩散。
+3. 容器逃逸的方式
+回答：
+常见容器逃逸方式包括：
+
+特权容器（--privileged）：挂载主机目录、SYS_ADMIN能力 → mount主机文件系统或chroot逃逸。
+挂载敏感目录：挂载/var/run/docker.sock → 通过Docker API创建特权容器逃逸。
+内核漏洞：Dirty COW、CVE-2022-0185等。
+Namespace/Cgroups绕过：结合SYS_PTRACE、主机PID Namespace等。
+Kubernetes特定：挂载ServiceAccount Token、hostPath卷、log symlink攻击、runc漏洞（CVE-2019-5736）。
+
+防御关键是最小权限原则：drop所有Capabilities、非root运行、禁用特权模式、使用gVisor/Kata等沙箱。”
+4. K8s污点横向（Kubernetes Taint 横向移动）
+回答：
+“K8s中Taint（污点）用于节点调度控制（NoSchedule/NoExecute等）。攻击者横向时可利用：
+
+如果Pod有容忍（Tolerations）污点，可调度到特定节点。
+攻击者通过已控Pod修改节点Taint或利用RBAC权限创建DaemonSet/Pod到其他节点，实现节点级横向。
+结合ServiceAccount高权限（impersonation、create pods），从一个节点逃逸后污染其他节点调度，扩散控制。
+
+实际场景中，我会重点监控RBAC权限滥用和节点Taint变更日志。”
+5. Shiro550 和 721 的区别
+回答：
+“Shiro-550（CVE-2016-4437）和Shiro-721是RememberMe机制的反序列化漏洞，主要区别：
+
+Shiro-550（影响版本 ≤1.2.4）：默认硬编码AES Key（kPH+bIxk5D2deZiIxcaaaA==），攻击者直接用已知Key加密恶意反序列化Payload（ysoserial CommonsCollections等），无需登录。
+Shiro-721（影响版本 1.2.5 ~ <1.4.2）：修复了默认Key，但AES-CBC模式存在Padding Oracle漏洞。攻击者需要一个合法RememberMe Cookie作为前缀，通过Padding Oracle Attack爆破/构造有效密文，实现反序列化，无需知道Key。
+
+550条件更低（硬Key），721需要Padding Oracle技巧。防御都是随机化Key + 升级版本 + 禁用RememberMe（非必要）。”
+6. Shiro怎么判断他的Key？
+回答：
+“判断Shiro Key常用方法：
+
+默认Key检测：直接用已知默认Key构造550 Payload测试返回是否反序列化成功。
+Padding Oracle：用合法RememberMe Cookie进行二分/字节爆破，观察响应包长度或异常差异判断加密结果。
+工具：ShiroExploit、Burp插件、自定义Python脚本（AES加解密测试）。
+流量特征：RememberMe Cookie为固定前缀 + Base64，解密后观察序列化数据。”
+
+7. 爆破Key需要用到哪些利用链？
+回答：
+“爆破Key主要依赖Padding Oracle Attack（721）：
+
+需要合法RememberMe作为Oracle前缀。
+利用链：AES-CBC Padding Oracle → 逐步构造有效密文 → 嵌入ysoserial生成的反序列化Gadget（如CommonsBeanutils、Jdk7u21等）。
+工具链：Shiro-721专用脚本 + Burp Intruder/自定义脚本。成功后即可触发RCE。”
+
+8. Fastjson漏洞不出网应该怎么利用？研判 + 利用链
+回答：
+研判：流量中看到@type + Java-uti、classloader、JNDI等关键字，结合cmd=、Script alert、xml等，高度怀疑Fastjson反序列化漏洞（autoType开启或绕过）。Gzip压缩常见于隐藏Payload。
+不出网利用（DNS不出网场景）：
+
+利用链：JdbcRowSetImpl + 本地Gadget（如TemplatesImpl + ClassLoader）实现命令执行；或Exception类Gadget绕过（CVE-2022-25845等）。
+常见Payload：{"@type":"com.sun.rowset.JdbcRowSetImpl", ...} 或自定义恶意Class加载。
+研判思路：看请求中JSON结构是否包含高危类 + 后续命令执行/文件写入行为。”
+
+9. 图片分析（Java-uti, beacon, geth, classloader, jndi, php-cgi, cmd=, xml, Script alert 等 + Gzip + URL后缀）
+回答：
+“综合图片特征：
+
+Java相关（Java-uti、classloader、JNDI）：Fastjson / Jackson 反序列化 + JNDI注入（Log4Shell风格）。
+Beacon / Geth：Cobalt Strike Beacon流量 或 Go相关C2。
+PHP-CGI / cmd= / Script alert：PHP命令执行（CVE-2012-1823残留或新变种）+ XSS。
+XML：XXE漏洞。
+Gzip + URL参数：Payload隐藏/压缩传输，典型WebShell或自动化攻击。
+
+整体判断为多向量攻击：Fastjson/JNDI反序列化 → 获取Webshell → 部署C2 Beacon → 横向/命令执行。优先研判Java应用 + PHP混合环境。”
+10. Socks5加云函数怎么溯源
+回答：
+“Socks5代理 + 云函数（Serverless）是常见隐蔽C2：
+
+溯源：查出口流量特征（Socks5握手包）、云函数调用日志（阿里/腾讯/AWS CloudTrail）。
+关联入口IP → 云函数触发日志 → 真实C2地址。
+工具：Wireshark过滤Socks5 + 云平台审计日志。”
